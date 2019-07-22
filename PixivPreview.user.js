@@ -5,7 +5,7 @@
 // @description     Enlarged preview of arts and manga on mouse hovering on most pages. Click on image preview to open original art in new tab, or MMB-click to open art illustration page, Alt+LMB-click to to add art to bookmarks, Ctrl+LMB-click for saving originals of artworks. The names of the authors you are already subscribed to are highlighted with green.
 // @description:ru  Увеличённый предпросмотр артов и манги по наведению мышки на большинстве страниц. Клик ЛКМ по превью арта для открытия исходника в новой вкладке, СКМ для открытия страницы с артом, Alt + клик ЛКМ для добавления в закладки, Ctrl + клик ЛКМ для сохранения оригиналов артов. Имена авторов, на которых вы уже подписаны, подсвечиваются зелёным цветом.
 // @author          NightLancerX
-// @version         1.35.1
+// @version         1.38.1
 // @match           https://www.pixiv.net/bookmark_new_illust.php*
 // @match           https://www.pixiv.net/discovery*
 // @match           https://www.pixiv.net/bookmark_detail.php?illust_id=*
@@ -40,6 +40,11 @@
     const DELAY_BEFORE_PREVIEW = 0; //if you need delay before showing art preview, set it here (1000 = 1 second)
     const PREVIEW_SIZE = 600; //if you have "4K" or "QHD" monitor, you can set preview size to 1200(which can't fit at 1920*1080 monitor, so stay at 600 if you have that one)
     const ACCURATE_MANGA_PREVIEW = false; //if `true` - increases time before manga preview appearing(to 1sec) but shows it at more accurate position considering width(for case of few arts)
+    const DISABLE_MANGA_PREVIEW_SCROLLLING_PROPAGATION = false; //defines whether to keep on scrolling propagation when reaching end of manga preview container
+    const SCROLL_INTO_VIEW_FOR_SINGLE_IMAGE = true; //apply scrollIntoView for single preview
+    const DISABLE_SINGLE_PREVIEW_BACKGROUND_SCROLLING = false; //defines background scrolling for single preview when `SCROLL_INTO_VIEW_FOR_SINGLE_IMAGE` set to `true`
+    //-----------------------------------------------------------------------------------
+    //const EXPERIMENTAL_WORKSPAGE_RESTYLE = false; //currently raw style adjustment on illust page; may broke at any time, so turn it on your risk (yet) --> currently broken
     //-----------------------------------------------------------------------------------
 
     let hoverImg = document.createElement('img');
@@ -67,13 +72,14 @@
         siteImgMaxWidth = 184, //2,3,7,12 [NEW]| //todo: quite useless on this pages because of square previews...
         mangaWidth = 1200,
         //prevSize = PREVIEW_SIZE,
+        maxRequestTime = 30000,
         bookmarkObj,
         isBookmarked = false, //todo: rework or delete. Arts can be bookmarked on art page.
         DELTASCALE = ('mozInnerScreenX' in window)?70:4,
         previewEventType = (PREVIEW_ON_CLICK)?'click':'mouseenter',
         PAGETYPE = checkPageType();
 
-    var timerId;
+    var timerId, tInt;
     //-----------------------------------------------------------------------------------
     Storage.prototype.setObj = function(key, obj){
       return this.setItem(key, JSON.stringify(obj))
@@ -87,7 +93,7 @@
     function checkPageType()
     {
       if (document.URL.match('https://www.pixiv.net/bookmark_new_illust.php?'))                             return 0; //Works from favourite artists
-      if (document.URL.match('https://www.pixiv.net/discovery?'))                                           return 1; //Discovery page
+      if (document.URL==='https://www.pixiv.net/discovery')                                                 return 1; //Discovery page(works)
       if (document.URL.match('https://www.pixiv.net/member.php?'))                                          return 3; //Artist "Home" page - New
       if (document.URL.match('https://www.pixiv.net/bookmark_detail.php?'))                                 return 4; //Bookmark information
       if (document.URL.match('https://www.pixiv.net/ranking.php?'))                                         return 6; //Daily rankings
@@ -98,6 +104,7 @@
       if (document.URL.match('https://www.pixiv.net/stacc?'))                                               return 11; //Feed ('stacc')
       if (document.URL.match(/https:\/\/www\.pixiv\.net\/member_illust\.php\?mode\=medium\&illust_id\=/))   return 12; //Illust page - New
       if (document.URL.match('https://www.pixiv.net/member_illust.php?'))                                   return 2; //Artist works page - New
+      if (document.URL.match('https://www.pixiv.net/discovery/users?'))                                     return 13; //Discovery page(users)
 
       return -1;
     }
@@ -105,7 +112,7 @@
     //===================================================================================
     //**********************************ColorFollowed************************************
     //===================================================================================
-    if ([1,4,6].includes(PAGETYPE)) //+12 in initMutationParentOnject(TODO: does it needed now?) | todo: 7
+    if ([1,4,6].includes(PAGETYPE)) //+12 in initMutationParentObject(TODO: does it needed now?) | todo: 7
     {
       checkFollowedArtistsInit();
     }
@@ -164,6 +171,7 @@
               localStorage.setObj('followedCheckStarted', false);
               localStorage.setObj('followedUsersId', followedUsersId);
               localStorage.setObj('followedCheckDate', Date.now());
+              localStorage.setObj('followedCheckError', false);
               console.log('Followed check completed');
 
               if (PAGETYPE===6) colorFollowed(); //only for daily rankings? | for loading on same page case
@@ -184,7 +192,7 @@
     //-----------------------------------------------------------------------------------
     async function colorFollowed(artsContainers)
     {
-      let c = 0;
+      let c = 0, d = 0;
       while (!artsContainers || artsContainers.length === 0) //first call -> daily rankings, illust page
       {
         console.log('waiting for arts...');
@@ -211,9 +219,20 @@
           {
             console.log("waiting for followed users..."); //this could happen in case of huge followed users amount
             await sleep(2000);
+
             if (localStorage.getObj('followedCheckError'))
             {
               console.error('ERROR while RECEIVING subscriptions list!');
+              break;
+            }
+
+            ++d;
+            if (d*2000>maxRequestTime)
+            {
+              console.error('ERROR while EXPECTING for subscriptions list!');
+              localStorage.setObj('followedCheckError', true);
+              localStorage.setObj('followedCheckCompleted', false);
+              localStorage.setObj('followedCheckStarted', false);
               break;
             }
           }
@@ -233,9 +252,11 @@
 
       let currentHits = 0;
       let userId = 0;
+      //console.dir(artsContainers);
       for(let i = 0; i < artsContainersLength; i++)
       {
         userId = getUserId(artsContainers[i]);
+        //console.log(userId);
         //if (followedUsersId.indexOf(userId)>=0)
         if (followedUsersId[userId]==true)
         {
@@ -247,11 +268,12 @@
       console.log('hits: '+currentHits + ' (Total: '+(lastHits)+')');
     }
     //-----------------------------------------------------------------------------------
-    let getArtsContainers = ([1,12,4].includes(PAGETYPE))
-    ?function() {return $('.gtm-illust-recommend-user-name');}
-    :function() {return $('.ui-profile-popup');};
+    let getArtsContainers = ([1,4].includes(PAGETYPE)) //??? TODO!!!
+    ?                           function() {return document.querySelectorAll('.gtm-illust-recommend-user-name');}
+    :([12].includes(PAGETYPE))? function() {return document.querySelectorAll('.gtm-illust-recommend-title');}
+    :                           function() {return $('.ui-profile-popup');};
     //-----------------------------------------------------------------------------------
-    let getUserId = (PAGETYPE===6)
+    let getUserId = (PAGETYPE===6 || PAGETYPE===1 || PAGETYPE===13) //1,6
     ?function (artContainer)
     {
       let userId = (artContainer.hasAttribute('data-user_id'))
@@ -259,11 +281,10 @@
       :artContainer.querySelectorAll('.ui-profile-popup')[0].getAttribute('data-user_id');
       return userId;
     }
-    :function (artContainer) //1,2,4
+    :function (artContainer) //2,4
     {
-      let userId = (artContainer.hasAttribute('href'))
-      ?artContainer.getAttribute('href').split('=').pop()
-      :artContainer.querySelectorAll('.gtm-illust-recommend-user-name')[0].getAttribute('href').split('=').pop();
+      artContainer = artContainer.querySelectorAll('.gtm-illust-recommend-title')[0] || artContainer; // -_-'
+      let userId = artContainer.parentNode.querySelectorAll('[href*="/member.php?id="]')[0].getAttribute('href').split('=').pop();
       return userId;
     };
     //-----------------------------------------------------------------------------------
@@ -277,7 +298,7 @@
       return document.evaluate(path, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
     };
     //-----------------------------------------------------------------------------------
-    let getArtSectionContainers = ([1,12,4].includes(PAGETYPE))
+    let getArtSectionContainers = ([1,12,4,13].includes(PAGETYPE))
     ?function() {return $('.gtm-illust-recommend-zone');}
     :function() {return $('.ranking-items');};
     //-----------------------------------------------------------------------------------
@@ -317,7 +338,7 @@
       createObserver(mainDiv);
     }
     //-----------------------------------------------------------------------------------
-    async function initMutationParentOnject()
+    async function initMutationParentObject()
     {
       let observerParent = new MutationObserver(function(mutations)
       {
@@ -330,7 +351,6 @@
           {
             checkFollowedArtistsInit();
 
-            colorFollowed();
             createObserver(mainDiv[0]);
             observerParent.disconnect();
             observerParent = null;
@@ -352,7 +372,7 @@
       observerParent.observe(parentDiv, options2);
       console.log('observerParent set');
 
-      //initGallery(); TODO (preview on the illust page???)
+      //initGallery(); TODO (preview on the illust page???) - no need? - pixiv has released own 'gallery'
     }
     //-----------------------------------------------------------------------------------
     function initGallery() {
@@ -365,17 +385,21 @@
     function followage(thisObj, toFollow, isNew) //TODO: into async queue
     {
       console.log('toFollow: '+ toFollow);
-      let userId = (!isNew)
-        ?thisObj.parentNode.parentNode.querySelectorAll('a.user-name')[0].getAttribute('href').split('&')[0].split('=')[1] //OLD
-        //:thisObj.parentNode.parentNode.parentNode.querySelectorAll('[href*="/member.php?id="]')[0].getAttribute('href').split('=').pop(); //NEW
-        :document.querySelectorAll('[href*="/member.php?id="]')[0].getAttribute('href').split('=').pop(); //NEW
+      let userId;
+      switch (isNew){
+        case 0: userId = thisObj.parentNode.parentNode.querySelectorAll('a.user-name')[0].getAttribute('href').split('&')[0].split('=')[1]; break; //OLD
+        case 1: userId = document.querySelectorAll('[href*="/member.php?id="]')[0].getAttribute('href').split('=').pop(); break; //NEW
+        case 2: userId = thisObj.getAttribute('data-user-id'); break; //recommended users
+      }
       //console.log(userId);
 
       if (localStorage.getObj('followedCheckCompleted')) //at least basic check until queue is developed
       {
         let followedUsersId = localStorage.getObj('followedUsersId'); //local
-        if (toFollow)
+        if (toFollow){
           followedUsersId[userId] = true;
+          //if (!PAGETYPE===13) initFollowagePreview(); //TODO - broken
+        }
         else
           delete followedUsersId[userId];
 
@@ -384,6 +408,26 @@
       }
       else console.error('Slow down! You have subscribed too many to handle this by now! Wait for the next updates');
     }
+    //-----------------------------------------------------------------------------------
+    /*
+    function initFollowagePreview() //TODO!!!
+    {
+      $('body').on(previewEventType, 'a[href*="member_illust.php?mode=medium&illust_id="]', function(e)
+      {
+        e.preventDefault();
+        setHover(this.firstChild);
+        //---
+        //hoverImg.onload = function(){imgContainer.scrollIntoView({block: "start", behavior: "smooth"});}; //!!! TODO - only to follow case
+
+        let scroll = getElementByXpath('/html/body/div[6]/div/div/div/div/ul');
+        scroll.onwheel = function(ev)
+        {
+          ev.preventDefault();
+          scroll.scrollLeft += ev.deltaY*DELTASCALE;
+        };
+      });
+    }
+    */
     //===================================================================================
     if      (PAGETYPE===0 || PAGETYPE===1 || PAGETYPE===8)  siteImgMaxWidth = 198;
     else if (PAGETYPE===4 || PAGETYPE===9 || PAGETYPE===10) siteImgMaxWidth = 150;
@@ -394,19 +438,50 @@
       console.log('$(document).ready');
       mangaWidth = document.body.clientWidth - 80;
       mangaContainer.style.maxWidth = mangaOuterContainer.style.maxWidth = mangaWidth+'px';
-      //mangaContainer.style.maxHeight = mangaOuterContainer.style.maxHeight = document.documentElement.clientHeight;
       document.body.appendChild(imgContainer);
       document.body.appendChild(mangaOuterContainer);
 
+      //------------------------------Style changing-------------------------------------
+      /*
+      if (EXPERIMENTAL_WORKSPAGE_RESTYLE===true && PAGETYPE===2){
+        setTimeout(function(){
+          var aaa= document.getElementsByClassName('gW2sMCp')[0];
+          aaa.style = 'max-Width:'+ document.body.clientWidth + 'px;';
+
+          var bbb = document.getElementsByClassName('sc-kjoXOD dYMASP');
+          for (let item of bbb) {
+            console.log(item.id);
+            item.style.width = '250px';
+          }
+
+          var ccc = document.getElementsByClassName('sc-bRBYWo dHdfgU');
+          for (let item2 of ccc) {
+            console.log(item2.id);
+            item2.style.width = '250px';
+            item2.style.height = '250px';
+          }
+
+          var ddd = document.getElementsByClassName('_2WwRD0o _2WyzEUZ')[0];
+          ddd.style = 'margin:-12px -24px; padding: 0px;';
+        }, 2000);
+
+        //todo: meed to restyle after reload
+        ///html/body/div[1]/div[1]/div/div[2] - parent?
+      }
+      */
       //-------------------------------Follow onclick------------------------------------
       let toFollow, isNew, followSelector;
       if ([2,3,7,12].includes(PAGETYPE)){
         followSelector = '[data-click-label*="follow"]';
-        isNew = true;
+        isNew = 1;
       }
-      else{
+      else if([13].includes(PAGETYPE)){
         followSelector = '.follow-button';
-        isNew = false;
+        isNew = 2;
+      }
+      else {
+        followSelector = '.follow-button';
+        isNew = 0;
       }
 
       $('body').on('mouseup', followSelector, function(){
@@ -423,6 +498,15 @@
         }, 4000); -> await while
       }
       */
+      //---------------------------------------------------------------------------------
+      $('body').on(previewEventType, 'a[href*="ref=profile_card"]', function(e) //TODO
+      {
+        e.preventDefault();;
+        setHover(this);
+
+        imgContainer.style.top = getOffsetRect(this).top+200+'px';
+        //$(imgContainer).css('zIndex', 3000);
+      });
       //--------------------------------Bookmark detail----------------------------------
       if (PAGETYPE===4)
       {
@@ -433,7 +517,16 @@
       //-----------------------------------Illust page-----------------------------------
       if (PAGETYPE===12)
       {
-        initMutationParentOnject();
+        let zone = document.getElementsByClassName('gtm-illust-recommend-zone')[0];
+        if (zone === undefined)
+          initMutationParentObject();
+        else
+        {
+          console.log(zone);
+          checkFollowedArtistsInit();
+          colorFollowed(); //process missed arts containers
+          createObserver(zone);
+        }
       }
       //-----------------------------Init illust fetch listener--------------------------
       if (PAGETYPE===1 || PAGETYPE===4 || PAGETYPE===6)
@@ -444,7 +537,7 @@
       //**************************************Hover**************************************
       //=================================================================================
       //-----------------------------FEED, DISCOVERY AND SEARCH-------------------------- //0,1,8
-      if ((PAGETYPE === 0) || (PAGETYPE === 1) || (PAGETYPE===8)) //TODO - simplify!!
+      function setPreviewEventListeners()
       {
         //single art hover---------------------------------------------------------------
         $('body').on(previewEventType, 'a[href*="member_illust.php?mode=medium&illust_id="] > div:only-child', function(e)
@@ -466,13 +559,63 @@
             setMangaHover(this, this.parentNode.firstChild.firstChild.textContent);
           }
         });
-
-        //clearing loaded arts count when switching on tabs------------------------------
-        if (PAGETYPE === 1) $('body').on('mouseup','a[href="/discovery/users"]', function() //todo:make into single event handler
+      }
+      //---------------------------------------------------------------------------------
+      let discoveryUsersPreview = function(e)
+      {
+        e.preventDefault();
+        if      (this.childNodes.length == 0)  setHover(this); //single art
+        else if (this.childNodes.length == 1)  setMangaHover(this, this.firstChild.textContent); //manga
+      };
+      //---------------------------------------------------------------------------------
+      function setDiscoveryUsersPreviewEventListeners()
+      {
+        $('body').on(previewEventType, 'a[href*="member_illust.php?mode=medium&illust_id="]', discoveryUsersPreview);
+      };
+      //---------------------------------------------------------------------------------
+      function setTabSwitchingListenerW_U()
+      {
+        $('body').on('mouseup','a[href="/discovery/users"]', function() //todo:make into single event handler
         {
-          console.log('leaving works page...');
-          artsLoaded = lastHits = 0;
+          console.log('Works -> Users');
+          PAGETYPE = 13;
+          artsLoaded = lastHits = 0; //clearing loaded arts count when switching on tabs
+          $('body').off(); //may cause some removal of timeout events? todo
+          setDiscoveryUsersPreviewEventListeners();
+          setTabSwitchingListenerU_W();
         });
+      };
+      //---------------------------------------------------------------------------------
+      function setTabSwitchingListenerU_W()
+      {
+        $('body').on('mouseup','a[href="/discovery"]', function() //todo:make into single event handler
+        {
+          console.log('Users -> Works');
+          PAGETYPE = 1;
+          artsLoaded = lastHits = 0; //not necessary
+          checkFollowedArtistsInit();
+          initMutationObject();
+
+          $('body').off();//(previewEventType, 'a[href*="member_illust.php?mode=medium&illust_id="]', discoveryUsersPreview);
+          setPreviewEventListeners();
+          setTabSwitchingListenerW_U();
+        });
+      };
+      //------------------------------------Discovery------------------------------------
+      if (PAGETYPE === 1) //Works
+      {
+        setTabSwitchingListenerW_U();
+        setPreviewEventListeners();
+      }
+      else if (PAGETYPE === 13) //Users
+      {
+        setTabSwitchingListenerU_W();
+        setDiscoveryUsersPreviewEventListeners();
+      }
+      //---------------------------------FEED AND SEARCH---------------------------------
+      else if ((PAGETYPE === 0) || (PAGETYPE===8))
+      {
+        setPreviewEventListeners();
       }
       //--------------------ARTIST WORKS, "TOP" PAGES, Someone's Bookmarks--------------- //2,3,7,12[2]
       else if (PAGETYPE===2 || PAGETYPE===3 || PAGETYPE===7 || PAGETYPE===12) //TODO!!! do smthng with that amorphous pixiv styleshit!
@@ -506,14 +649,14 @@
           {
             bookmarkObj = this.parentNode.parentNode.childNodes[1].childNodes[0].childNodes[0];
             //checkBookmark_NewLayout(this);
-            setHover(this);
+            setHover(this.childNodes[0]); //todo? - zero child-node trying?
           }
           //manga-style arts hover-------------------------------------------------------
           else
           {
             bookmarkObj = this.parentNode.parentNode.childNodes[1].childNodes[0].childNodes[0];
             //checkBookmark_NewLayout(this);
-            setMangaHover(this, this.parentNode.firstChild.childNodes[1].textContent);
+            setMangaHover(this.childNodes[0], this.parentNode.firstChild.childNodes[1].textContent);
           }
         });
       }
@@ -597,29 +740,71 @@
     //-----------------------------------------------------------------------------------
     function setHover(thisObj)
     {
+      clearTimeout(timerId);
+      clearTimeout(tInt);
       mangaOuterContainer.style.visibility = 'hidden';
 
       hoverImg.src = parseImgUrl(thisObj, PREVIEW_SIZE);
       imgContainer.style.top = getOffsetRect(thisObj.parentNode.parentNode).top+'px';
 
       //adjusting preview position considering expected image width
-      let l = getOffsetRect(thisObj.parentNode.parentNode).left;
-      let w = PREVIEW_SIZE*(((PAGETYPE==6)?thisObj.clientWidth:thisObj.parentNode.parentNode.clientWidth)/siteImgMaxWidth)+5;
-      imgContainer.style.left = (document.body.clientWidth-l < w)? document.body.clientWidth-w +'px': l +'px';
+      //---------------------------------------------------------------------------------
+      let l = (![2,3,7,12,13].includes(PAGETYPE)) //more accurate on discovery users
+          ?getOffsetRect(thisObj.parentNode.parentNode).left
+          :getOffsetRect(thisObj).left;
+      let dcw = document.body.clientWidth;
+      let previewWidth = 0;
 
+      if (hoverImg.naturalWidth>0){ //cached (previously viewed)
+        adjustSinglePreview(dcw, l, hoverImg.naturalWidth);
+      }
+      else{
+        if (![2,3,7,12,13].includes(PAGETYPE)){
+          let previewWidth = PREVIEW_SIZE*(((PAGETYPE==6)?thisObj.clientWidth:thisObj.parentNode.parentNode.clientWidth)/siteImgMaxWidth)+5; //if not on NEW layout - width is predictable
+          adjustSinglePreview(dcw, l, previewWidth);
+        }
+        else{
+          if (dcw - l - PREVIEW_SIZE - 5 > 0){ //if it is obvious that preview will fit on the screen then there is no need in setInterval(trying to use as minimun setInterval`s as possible)
+            imgContainer.style.left = l+'px';
+            checkDelay(function(){imgContainer.style.display='block';});
+          }else{ //when on NEW layout - need to wait until image width is received
+            let tLimit;
+            tInt = setInterval(function(){
+              if (hoverImg.naturalWidth>0){
+                clearTimeout(tInt);
+                //elementMouseIsOver = document.elementFromPoint(x, y); if (thisObj != elementMouseIsOver) break;
+                adjustSinglePreview(dcw, l, hoverImg.naturalWidth); //position mismatching due to old `thisObj` => clearing in hoverImg.mouseleave
+                ++tLimit;
+              }
+              if (tLimit*20>3000){ //in case of loading errors
+                clearTimeout(tInt);
+                hoverImg.src='';
+                console.error('setInterval error');
+              }
+            }, 20);
+          }
+        }
+      }
+      //---------------------------------------------------------------------------------
       if (isBookmarked) $(imgContainer).css("background", "rgb(255, 64, 96)");
       else $(imgContainer).css("background", "rgb(34, 34, 34)");
-
-      //imgContainer.style.display='block';
+    }
+    //-----------------------------------------------------------------------------------
+    function adjustSinglePreview(dcw, l, contentWidth)
+    {
+      let d = dcw - l - contentWidth - 5; //5 - padding - todo...
+      imgContainer.style.left = (d>=0)?l+'px':l+d+'px';
       checkDelay(function(){imgContainer.style.display='block';});
     }
     //-----------------------------------------------------------------------------------
     function setMangaHover(thisObj, count)
     {
+      clearTimeout(timerId);
+      clearTimeout(tInt);
       imgContainer.style.display='none'; //just in case
 
       mangaOuterContainer.style.top = getOffsetRect(thisObj.parentNode.parentNode).top+'px';
-      //mangaOuterContainer.style.left = '30px';
+      if (!ACCURATE_MANGA_PREVIEW) mangaOuterContainer.style.left = '30px';
 
       if (isBookmarked) $(mangaOuterContainer).css("background", "rgb(255, 64, 96)");
       else $(mangaOuterContainer).css("background", "rgb(34, 34, 34)");
@@ -669,6 +854,7 @@
       //---------------------------------------------------------------------------------
       else
       {
+        adjustMargins(mangaOuterContainer.scrollWidth);
         checkDelay(function(){mangaOuterContainer.style.visibility='visible';});
       }
     };
@@ -684,6 +870,7 @@
     {
       let margins = document.body.clientWidth - width;
       if (margins > 0) mangaOuterContainer.style.left = margins/2-10+'px';
+      else mangaOuterContainer.style.left = '30px';
     }
     //-----------------------------------------------------------------------------------
     function checkBookmark(thisObj) //seems excessive -> todo delete
@@ -728,11 +915,14 @@
     {
       imgContainer.style.display='none';
       hoverImg.src='';
+      clearTimeout(timerId);
+      clearTimeout(tInt);
     };
     //-----------------------------------------------------------------------------------
     mangaOuterContainer.onmouseleave = function()
     {
       mangaOuterContainer.style.visibility='hidden';
+      clearTimeout(timerId);
     };
     //===================================================================================
     //***********************************Art Clicks**************************************
@@ -849,10 +1039,24 @@
       }
 
       let scrlLft = mangaContainer.scrollLeft;
-      if ((scrlLft>0 && e.deltaY<0) || ((scrlLft<(mangaContainer.scrollWidth-mangaContainer.clientWidth)) && e.deltaY>0))
+      if ((DISABLE_MANGA_PREVIEW_SCROLLLING_PROPAGATION) || ((scrlLft>0 && e.deltaY<0) || ((scrlLft<(mangaContainer.scrollWidth-mangaContainer.clientWidth)) && e.deltaY>0)))
       {
         e.preventDefault();
         mangaContainer.scrollLeft += e.deltaY*DELTASCALE;
+      }
+    };
+    //-----------------------------------------------------------------------------------
+    if (SCROLL_INTO_VIEW_FOR_SINGLE_IMAGE) imgContainer.onwheel = function(e)
+    {
+      if (DISABLE_SINGLE_PREVIEW_BACKGROUND_SCROLLING) e.preventDefault();
+
+      if (e.deltaY<0 && (imgContainer.getBoundingClientRect().top < 0))
+      {
+        imgContainer.scrollIntoView({block: "start", behavior: "smooth"}); //aligning to top screen side on scrollUp if needed
+      }
+      else if (e.deltaY>0 && (imgContainer.getBoundingClientRect().bottom > document.documentElement.clientHeight))
+      {
+        imgContainer.scrollIntoView({block: "end", behavior: "smooth"}); //aligning to bottom screen side on scrollDown if needed
       }
     };
     //-----------------------------------------------------------------------------------
@@ -864,7 +1068,7 @@
     //-----------------------------------------------------------------------------------
     document.onkeyup = function(e) //Enlarge with shift
     {
-      console.log(e.keyCode);
+      //console.log(e.keyCode);
       if (e.keyCode == 16 && hoverImg.src && PREVIEW_SIZE<1200)
       {
         let l = getOffsetRect(imgContainer).left;
